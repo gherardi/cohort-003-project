@@ -11,6 +11,8 @@ import { AlertTriangle, BookOpen, GraduationCap, Plus, Users } from "lucide-reac
 import { CourseImage } from "~/components/course-image";
 import { data, isRouteErrorResponse } from "react-router";
 import { CourseStatus, UserRole } from "~/db/schema";
+import { getRatingSummariesForCourses } from "~/services/ratingService";
+import { StarRatingDisplay } from "~/components/star-rating";
 
 export function meta() {
   return [
@@ -37,6 +39,9 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   const instructorCourses = getCoursesByInstructor(currentUserId);
+  const ratings = getRatingSummariesForCourses(
+    instructorCourses.map((c) => c.id)
+  );
 
   const coursesWithStats = instructorCourses.map((course) => {
     const lessonCount = getLessonCountForCourse(course.id);
@@ -51,6 +56,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       coverImageUrl: course.coverImageUrl,
       lessonCount,
       enrollmentCount,
+      rating: ratings.get(course.id) ?? { average: null, count: 0 },
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
     };
@@ -205,6 +211,11 @@ export default function InstructorDashboard({
                     </span>
                   </div>
                 </div>
+                <StarRatingDisplay
+                  average={course.rating.average}
+                  count={course.rating.count}
+                  className="mt-2 text-sm"
+                />
               </CardContent>
               <CardFooter>
                 <Link to={`/instructor/${course.id}`} className="w-full">

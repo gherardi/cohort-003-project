@@ -9,6 +9,8 @@ import { Skeleton } from "~/components/ui/skeleton";
 import { AlertTriangle, BookOpen, CheckCircle2, GraduationCap, PlayCircle } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
 import { data, isRouteErrorResponse } from "react-router";
+import { getRatingSummariesForCourses } from "~/services/ratingService";
+import { StarRatingDisplay } from "~/components/star-rating";
 
 export function meta() {
   return [
@@ -27,6 +29,9 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   const enrolledCourses = getUserEnrolledCourses(currentUserId);
+  const ratings = getRatingSummariesForCourses(
+    enrolledCourses.map((e) => e.courseId)
+  );
 
   const coursesWithProgress = enrolledCourses.map((enrollment) => {
     const progress = calculateProgress(
@@ -53,6 +58,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       totalLessons,
       nextLessonId: nextLesson?.id ?? null,
       isCompleted,
+      rating: ratings.get(enrollment.courseId) ?? { average: null, count: 0 },
     };
   });
 
@@ -157,6 +163,11 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
                       >
                         {course.courseTitle}
                       </Link>
+                      <StarRatingDisplay
+                        average={course.rating.average}
+                        count={course.rating.count}
+                        className="text-xs"
+                      />
                       <p className="line-clamp-2 text-sm text-muted-foreground">
                         {course.courseDescription}
                       </p>
@@ -229,6 +240,11 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
                       >
                         {course.courseTitle}
                       </Link>
+                      <StarRatingDisplay
+                        average={course.rating.average}
+                        count={course.rating.count}
+                        className="text-xs"
+                      />
                       <p className="line-clamp-2 text-sm text-muted-foreground">
                         {course.courseDescription}
                       </p>

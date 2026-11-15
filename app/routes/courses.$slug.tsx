@@ -42,6 +42,22 @@ import { formatDuration, formatPrice } from "~/lib/utils";
 import { renderMarkdown } from "~/lib/markdown.server";
 import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice, getCountryTierInfo } from "~/lib/ppp";
+import { z } from "zod";
+import { parseFormData } from "~/lib/validation";
+import {
+  getCourseRatingSummary,
+  getUserRating,
+  rateCourse,
+} from "~/services/ratingService";
+import {
+  StarRatingDisplay,
+  StarRatingInput,
+} from "~/components/star-rating";
+
+const rateSchema = z.object({
+  intent: z.literal("rate"),
+  rating: z.coerce.number().int().min(1).max(5),
+});
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Course";
@@ -71,12 +87,14 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   let progress = 0;
   let lessonProgressMap: Record<number, string> = {};
   let nextLessonId: number | null = null;
+  let userRating: number | null = null;
 
   if (currentUserId) {
     enrolled = isUserEnrolled(currentUserId, course.id);
 
     if (enrolled) {
       progress = calculateProgress(currentUserId, course.id, false, false);
+      userRating = getUserRating(currentUserId, course.id);
 
       const progressRecords = getLessonProgressForCourse(
         currentUserId,
@@ -113,10 +131,35 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingSummary: getCourseRatingSummary(course.id),
+    userRating,
   };
 }
 
-// No action — enrollment is handled via the purchase confirmation page
+// Enrollment is handled via the purchase confirmation page; the only action here is rating
+export async function action({ params, request }: Route.ActionArgs) {
+  const course = getCourseBySlug(params.slug);
+  if (!course) {
+    throw data("Course not found", { status: 404 });
+  }
+
+  const currentUserId = await getCurrentUserId(request);
+  if (!currentUserId) {
+    throw data("You must be logged in", { status: 401 });
+  }
+
+  const parsed = parseFormData(await request.formData(), rateSchema);
+  if (!parsed.success) {
+    throw data("Invalid rating", { status: 400 });
+  }
+
+  if (!isUserEnrolled(currentUserId, course.id)) {
+    throw data("Only enrolled students can rate this course", { status: 403 });
+  }
+
+  rateCourse(currentUserId, course.id, parsed.data.rating);
+  return { success: true };
+}
 
 export function HydrateFallback() {
   return (
@@ -181,6 +224,8 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingSummary,
+    userRating,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -310,6 +355,11 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
             />
             {course.instructorName}
           </span>
+          <StarRatingDisplay
+            average={ratingSummary.average}
+            count={ratingSummary.count}
+            starClassName="size-4"
+          />
           <span className="flex items-center gap-1">
             <BookOpen className="size-4" />
             {lessonCount} lessons
@@ -407,6 +457,9 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
                         </Link>
                       ) : null;
                     })()}
+                  <div className="border-t pt-4">
+                    <StarRatingInput value={userRating} />
+                  </div>
                   <Link to={teamPurchaseLink}>
                     <Button variant="outline" className="w-full">
                       <Users className="mr-2 size-4" />
