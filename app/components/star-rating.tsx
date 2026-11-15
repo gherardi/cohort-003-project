@@ -11,12 +11,10 @@ function StarIcon({ fill, className }: { fill: number; className?: string }) {
     <span className={cn("relative inline-block shrink-0", className)}>
       <Star className="size-full text-muted-foreground/40" />
       {fill > 0 && (
-        <span
-          className="absolute inset-0 overflow-hidden"
-          style={{ width: `${fill * 100}%` }}
-        >
-          <Star className="size-full fill-amber-400 text-amber-400" />
-        </span>
+        <Star
+          className="absolute inset-0 size-full fill-amber-400 text-amber-400"
+          style={{ clipPath: `inset(0 ${100 - fill * 100}% 0 0)` }}
+        />
       )}
     </span>
   );
