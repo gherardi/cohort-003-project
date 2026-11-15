@@ -51,6 +51,7 @@ async function seed() {
     DROP TABLE IF EXISTS quiz_options;
     DROP TABLE IF EXISTS quiz_questions;
     DROP TABLE IF EXISTS quizzes;
+    DROP TABLE IF EXISTS lesson_comments;
     DROP TABLE IF EXISTS lesson_progress;
     DROP TABLE IF EXISTS coupons;
     DROP TABLE IF EXISTS team_members;
@@ -1418,6 +1419,47 @@ You've completed the Building REST APIs course. You now have the skills to build
 
   console.log("Created 5 course ratings.");
 
+  // ─── Lesson Comments ───
+
+  db.insert(schema.lessonComments)
+    .values([
+      {
+        lessonId: course1LessonIds[0],
+        userId: students[0].id,
+        content: "Great intro, the comparison with plain JavaScript really clicked for me.",
+        createdAt: daysAgo(45),
+      },
+      {
+        lessonId: course1LessonIds[0],
+        userId: students[2].id,
+        content: "Is TypeScript worth it for small side projects too?",
+        createdAt: daysAgo(33),
+      },
+      {
+        lessonId: course1LessonIds[0],
+        userId: instructor1.id,
+        content: "Absolutely. Even small projects benefit from editor autocompletion and catching typos early.",
+        createdAt: daysAgo(32),
+      },
+      {
+        lessonId: course1LessonIds[1],
+        userId: students[1].id,
+        content: "Check out my unrelated website for cheap stuff!!!",
+        createdAt: daysAgo(20),
+        deletedAt: daysAgo(19),
+        deletedBy: instructor1.id,
+      },
+      {
+        lessonId: course1LessonIds[1],
+        userId: students[4].id,
+        content: "On Windows I had to restart my terminal after installing tsc globally.",
+        createdAt: daysAgo(10),
+      },
+    ])
+    .run();
+
+  console.log("Created 5 lesson comments.");
+
   // ─── Lesson Progress ───
 
   // Helper to mark lessons as complete
@@ -1751,6 +1793,7 @@ You've completed the Building REST APIs course. You now have the skills to build
   console.log("  Quizzes: 3");
   console.log("  Enrollments: 7");
   console.log("  Course ratings: 5");
+  console.log("  Lesson comments: 5 (1 removed)");
   console.log("  Purchases: 6 (5 individual + 1 team)");
   console.log("  Teams: 1 (with 5 coupons)");
 }

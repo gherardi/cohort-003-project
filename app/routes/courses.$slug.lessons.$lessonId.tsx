@@ -40,11 +40,13 @@ import {
   Github,
   HelpCircle,
   MapPin,
+  MessageSquare,
   PlayCircle,
   ShieldAlert,
   XCircle,
   Trophy,
   RotateCcw,
+  Trash2,
 } from "lucide-react";
 import { cn, formatDuration } from "~/lib/utils";
 import { renderMarkdown } from "~/lib/markdown.server";
@@ -55,6 +57,18 @@ import { resolveCountry } from "~/lib/country.server";
 import { checkPppAccess, COUNTRIES } from "~/lib/ppp";
 import { findPurchase } from "~/services/purchaseService";
 import { parseFormData, parseParams } from "~/lib/validation";
+import {
+  canAccessLessonComments,
+  canModerateCourseComments,
+  createComment,
+  deleteComment,
+  getCommentById,
+  getCommentsForLesson,
+  type LessonComment,
+} from "~/services/commentService";
+import { MAX_COMMENT_LENGTH } from "~/lib/comments";
+import { Textarea } from "~/components/ui/textarea";
+import { UserAvatar } from "~/components/user-avatar";
 
 const lessonParamsSchema = z.object({
   slug: z.string().min(1),
@@ -63,6 +77,23 @@ const lessonParamsSchema = z.object({
 
 const markCompleteSchema = z.object({
   intent: z.literal("mark-complete"),
+});
+
+const addCommentSchema = z.object({
+  intent: z.literal("add-comment"),
+  content: z
+    .string()
+    .trim()
+    .min(1, "Comment cannot be empty")
+    .max(
+      MAX_COMMENT_LENGTH,
+      `Comment must be at most ${MAX_COMMENT_LENGTH} characters`
+    ),
+});
+
+const deleteCommentSchema = z.object({
+  intent: z.literal("delete-comment"),
+  commentId: z.coerce.number().int(),
 });
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
@@ -138,9 +169,19 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   let lastWatchPosition = 0;
   let watchProgress = 0;
   let lessonProgressMap: Record<number, string> = {};
+  let canComment = false;
+  let canModerate = false;
+  let comments: LessonComment[] = [];
 
   if (currentUserId) {
     enrolled = isUserEnrolled(currentUserId, course.id);
+
+    // Comments are only visible to enrolled students, the instructor and admins
+    canComment = canAccessLessonComments(currentUserId, course.id);
+    if (canComment) {
+      canModerate = canModerateCourseComments(currentUserId, course.id);
+      comments = getCommentsForLesson(lessonId);
+    }
 
     if (enrolled) {
       // Mark lesson as in-progress when viewed
@@ -281,6 +322,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
+    canComment,
+    canModerate,
   };
 }
 
@@ -329,6 +373,52 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
 
     return { quizResult: result };
+  }
+
+  if (intent === "add-comment") {
+    if (!canAccessLessonComments(currentUserId, course.id)) {
+      throw data("You don't have access to this discussion", { status: 403 });
+    }
+
+    const parsed = parseFormData(formData, addCommentSchema);
+    if (!parsed.success) {
+      return data(
+        { commentError: parsed.errors.content ?? "Invalid comment" },
+        { status: 400 }
+      );
+    }
+
+    try {
+      createComment(currentUserId, lessonId, parsed.data.content);
+    } catch (error) {
+      return data(
+        {
+          commentError:
+            error instanceof Error ? error.message : "Could not post comment",
+        },
+        { status: 400 }
+      );
+    }
+    return { commentPosted: true };
+  }
+
+  if (intent === "delete-comment") {
+    const parsed = parseFormData(formData, deleteCommentSchema);
+    if (!parsed.success) {
+      throw data("Invalid comment ID", { status: 400 });
+    }
+
+    const comment = getCommentById(parsed.data.commentId);
+    if (!comment || comment.lessonId !== lessonId || comment.deletedAt) {
+      throw data("Comment not found", { status: 404 });
+    }
+
+    try {
+      deleteComment(currentUserId, comment.id);
+    } catch {
+      throw data("You can't delete this comment", { status: 403 });
+    }
+    return { commentDeleted: true };
   }
 
   throw data("Invalid action", { status: 400 });
@@ -382,6 +472,9 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
+    canComment,
+    canModerate,
   } = loaderData;
   const [autoplay, toggleAutoplay] = useAutoplay();
   const fetcher = useFetcher({ key: `mark-complete-${lesson.id}` });
@@ -592,6 +685,16 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
             </div>
           )}
 
+          {/* Lesson Comments */}
+          {canComment && currentUserId && (
+            <LessonComments
+              lessonId={lesson.id}
+              comments={comments}
+              currentUserId={currentUserId}
+              canModerate={canModerate}
+            />
+          )}
+
           {/* Prev/Next Navigation */}
           <div className="flex items-center justify-between border-t pt-6">
             {prevLesson ? (
@@ -642,6 +745,147 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+function LessonComments({
+  lessonId,
+  comments,
+  currentUserId,
+  canModerate,
+}: {
+  lessonId: number;
+  comments: LessonComment[];
+  currentUserId: number;
+  canModerate: boolean;
+}) {
+  const fetcher = useFetcher<{ commentPosted?: boolean; commentError?: string }>(
+    { key: `comments-${lessonId}` }
+  );
+  const [content, setContent] = useState("");
+  const isPosting = fetcher.state !== "idle";
+  const visibleCount = comments.filter((c) => !c.deleted).length;
+
+  useEffect(() => {
+    if (fetcher.state !== "idle" || !fetcher.data) return;
+    if (fetcher.data.commentPosted) {
+      setContent("");
+      toast.success("Comment posted");
+    } else if (fetcher.data.commentError) {
+      toast.error(fetcher.data.commentError);
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  return (
+    <section className="mb-8">
+      <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold">
+        <MessageSquare className="size-5" />
+        Discussion
+        <span className="text-sm font-normal text-muted-foreground">
+          ({visibleCount})
+        </span>
+      </h2>
+
+      {comments.length === 0 ? (
+        <p className="mb-4 text-sm text-muted-foreground">
+          No comments yet. Start the discussion!
+        </p>
+      ) : (
+        <ul className="mb-6 space-y-4">
+          {comments.map((comment) => (
+            <CommentItem
+              key={comment.id}
+              comment={comment}
+              canDelete={canModerate || comment.userId === currentUserId}
+            />
+          ))}
+        </ul>
+      )}
+
+      <fetcher.Form method="post" className="space-y-2">
+        <input type="hidden" name="intent" value="add-comment" />
+        <Textarea
+          name="content"
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          maxLength={MAX_COMMENT_LENGTH}
+          placeholder="Share a question or thought about this lesson..."
+          rows={3}
+        />
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {content.length}/{MAX_COMMENT_LENGTH}
+          </span>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={isPosting || content.trim().length === 0}
+          >
+            {isPosting ? "Posting..." : "Post comment"}
+          </Button>
+        </div>
+        {fetcher.data?.commentError && (
+          <p className="text-sm text-destructive">
+            {fetcher.data.commentError}
+          </p>
+        )}
+      </fetcher.Form>
+    </section>
+  );
+}
+
+function CommentItem({
+  comment,
+  canDelete,
+}: {
+  comment: LessonComment;
+  canDelete: boolean;
+}) {
+  const fetcher = useFetcher({ key: `delete-comment-${comment.id}` });
+  const isDeleting = fetcher.state !== "idle";
+
+  if (comment.deleted) {
+    return (
+      <li className="text-sm italic text-muted-foreground">
+        [Comment removed]
+      </li>
+    );
+  }
+
+  return (
+    <li className={cn("flex gap-3", isDeleting && "opacity-50")}>
+      <UserAvatar name={comment.authorName} avatarUrl={comment.authorAvatarUrl} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{comment.authorName}</span>
+          <span className="text-xs text-muted-foreground">
+            {new Date(comment.createdAt).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}
+          </span>
+          {canDelete && (
+            <fetcher.Form method="post" className="ml-auto">
+              <input type="hidden" name="intent" value="delete-comment" />
+              <input type="hidden" name="commentId" value={comment.id} />
+              <Button
+                type="submit"
+                variant="ghost"
+                size="sm"
+                disabled={isDeleting}
+                aria-label="Delete comment"
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </fetcher.Form>
+          )}
+        </div>
+        <p className="whitespace-pre-wrap break-words text-sm">
+          {comment.content}
+        </p>
+      </div>
+    </li>
   );
 }
 
