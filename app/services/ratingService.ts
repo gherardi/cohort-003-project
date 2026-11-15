@@ -92,3 +92,13 @@ export function rateCourse(userId: number, courseId: number, rating: number) {
     .returning()
     .get();
 }
+
+export function removeCourseRating(userId: number, courseId: number) {
+  return db
+    .delete(courseRatings)
+    .where(
+      and(eq(courseRatings.userId, userId), eq(courseRatings.courseId, courseId))
+    )
+    .returning()
+    .get();
+}

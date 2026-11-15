@@ -48,6 +48,7 @@ import {
   getCourseRatingSummary,
   getUserRating,
   rateCourse,
+  removeCourseRating,
 } from "~/services/ratingService";
 import {
   StarRatingDisplay,
@@ -157,7 +158,12 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("Only enrolled students can rate this course", { status: 403 });
   }
 
-  rateCourse(currentUserId, course.id, parsed.data.rating);
+  // Clicking the same star count again removes the rating
+  if (getUserRating(currentUserId, course.id) === parsed.data.rating) {
+    removeCourseRating(currentUserId, course.id);
+  } else {
+    rateCourse(currentUserId, course.id, parsed.data.rating);
+  }
   return { success: true };
 }
 

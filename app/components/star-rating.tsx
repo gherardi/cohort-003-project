@@ -66,17 +66,23 @@ export function StarRatingInput({ value }: { value: number | null }) {
   const fetcher = useFetcher();
   const [hovered, setHovered] = useState<number | null>(null);
 
+  // Optimistic value: submitting the current rating again removes it
   const pendingRating = fetcher.formData
     ? Number(fetcher.formData.get("rating"))
-    : null;
-  const current = pendingRating ?? value;
+    : undefined;
+  const current =
+    pendingRating === undefined
+      ? value
+      : pendingRating === value
+        ? null
+        : pendingRating;
   const shown = hovered ?? current ?? 0;
 
   return (
     <fetcher.Form method="post" className="space-y-1">
       <input type="hidden" name="intent" value="rate" />
       <div className="text-sm font-medium">
-        {current ? "Your rating" : "Rate this course"}
+        {current ? `Your rating ${current}/5` : "Rate this course"}
       </div>
       <div
         className="flex items-center gap-0.5"
@@ -88,12 +94,17 @@ export function StarRatingInput({ value }: { value: number | null }) {
             type="submit"
             name="rating"
             value={n}
-            aria-label={`Rate ${n} ${n === 1 ? "star" : "stars"}`}
+            aria-label={
+              current === n
+                ? "Remove your rating"
+                : `Rate ${n} ${n === 1 ? "star" : "stars"}`
+            }
+            title={current === n ? "Click again to remove your rating" : undefined}
             aria-pressed={current === n}
             onMouseEnter={() => setHovered(n)}
             onFocus={() => setHovered(n)}
             onBlur={() => setHovered(null)}
-            className="rounded p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="cursor-pointer rounded p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <StarIcon fill={n <= shown ? 1 : 0} className="size-6" />
           </button>

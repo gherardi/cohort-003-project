@@ -17,6 +17,7 @@ import {
   getUserRating,
   getCourseRatingSummary,
   getRatingSummariesForCourses,
+  removeCourseRating,
 } from "./ratingService";
 
 function enroll(userId: number, courseId: number) {
@@ -69,6 +70,28 @@ describe("ratingService", () => {
       expect(() => rateCourse(base.user.id, base.course.id, value)).toThrowError(
         "Rating must be a whole number between 1 and 5"
       );
+    });
+  });
+
+  describe("removeCourseRating", () => {
+    it("removes the user's rating and updates the summary", () => {
+      const other = createStudent("other@example.com");
+      enroll(base.user.id, base.course.id);
+      enroll(other.id, base.course.id);
+      rateCourse(base.user.id, base.course.id, 5);
+      rateCourse(other.id, base.course.id, 3);
+
+      removeCourseRating(base.user.id, base.course.id);
+
+      expect(getUserRating(base.user.id, base.course.id)).toBeNull();
+      expect(getCourseRatingSummary(base.course.id)).toEqual({
+        average: 3,
+        count: 1,
+      });
+    });
+
+    it("is a no-op when the user has no rating", () => {
+      expect(removeCourseRating(base.user.id, base.course.id)).toBeUndefined();
     });
   });
 
