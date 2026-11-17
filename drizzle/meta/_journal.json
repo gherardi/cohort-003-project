@@ -36,6 +36,13 @@
       "when": 1794771300820,
       "tag": "0004_flimsy_proteus",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794952595142,
+      "tag": "0005_amazing_the_hunter",
+      "breakpoints": true
     }
   ]
 }
