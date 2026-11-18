@@ -4,15 +4,20 @@ import {
   coupons,
   courses,
   CourseStatus,
+  enrollments,
   purchases,
   UserRole,
 } from "~/db/schema";
 import { getCoursesByInstructor } from "~/services/courseService";
+import {
+  getRatingSummariesForCourses,
+  type RatingSummary,
+} from "~/services/ratingService";
 import { getUserById } from "~/services/userService";
 
 // ─── Analytics Service ───
 // Powers the Instructor Analytics Dashboard: whose data a viewer may see,
-// and the Revenue figures for one instructor's courses.
+// and the Revenue, Enrollment and rating figures for one instructor's courses.
 // Uses positional parameters (project convention).
 
 export type AnalyticsViewer = {
@@ -75,6 +80,9 @@ export type AnalyticsSummary = {
   revenue: number;
   purchases: number;
   seats: number;
+  enrollments: number;
+  // All-time, unlike the other figures, which follow the period
+  rating: RatingSummary;
 };
 
 export type AnalyticsCourseRow = {
@@ -84,6 +92,8 @@ export type AnalyticsCourseRow = {
   revenue: number;
   purchases: number;
   seats: number;
+  enrollments: number;
+  rating: RatingSummary;
 };
 
 export type InstructorAnalytics =
@@ -124,6 +134,17 @@ function getPeriodRange(
   return { start, end };
 }
 
+// The average of every rating, so a course's weight follows its rating count
+function combineRatingSummaries(summaries: RatingSummary[]): RatingSummary {
+  let count = 0;
+  let total = 0;
+  for (const summary of summaries) {
+    count += summary.count;
+    total += (summary.average ?? 0) * summary.count;
+  }
+  return { average: count === 0 ? null : total / count, count };
+}
+
 export function getInstructorAnalytics(
   instructorId: number,
   period: AnalyticsPeriod,
@@ -154,6 +175,23 @@ export function getInstructorAnalytics(
     )
     .all();
 
+  const enrollmentRows = db
+    .select({ courseId: enrollments.courseId })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .where(
+      and(
+        eq(courses.instructorId, instructorId),
+        start ? gte(enrollments.enrolledAt, start.toISOString()) : undefined,
+        lt(enrollments.enrolledAt, end.toISOString())
+      )
+    )
+    .all();
+
+  const courseRatingSummaries = getRatingSummariesForCourses(
+    instructorCourses.map((course) => course.id)
+  );
+
   // Every owned course gets a row, so courses that sold nothing show as zeros
   const courseRows = new Map<number, AnalyticsCourseRow>(
     instructorCourses.map((course) => [
@@ -165,11 +203,19 @@ export function getInstructorAnalytics(
         revenue: 0,
         purchases: 0,
         seats: 0,
+        enrollments: 0,
+        rating: courseRatingSummaries.get(course.id)!,
       },
     ])
   );
 
-  const summary: AnalyticsSummary = { revenue: 0, purchases: 0, seats: 0 };
+  const summary: AnalyticsSummary = {
+    revenue: 0,
+    purchases: 0,
+    seats: 0,
+    enrollments: enrollmentRows.length,
+    rating: combineRatingSummaries([...courseRatingSummaries.values()]),
+  };
   for (const row of purchaseRows) {
     // A team Purchase has one Seat per generated coupon; an individual one has one
     const seats = row.couponCount > 0 ? row.couponCount : 1;
@@ -182,6 +228,10 @@ export function getInstructorAnalytics(
     courseRow.revenue += row.pricePaid;
     courseRow.purchases += 1;
     courseRow.seats += seats;
+  }
+
+  for (const row of enrollmentRows) {
+    courseRows.get(row.courseId)!.enrollments += 1;
   }
 
   // Highest Revenue first (ties by title); the table can't be re-sorted

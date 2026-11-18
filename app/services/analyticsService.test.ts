@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
+import { eq } from "drizzle-orm";
 
 let testDb: ReturnType<typeof createTestDb>;
 let base: ReturnType<typeof seedBaseData>;
@@ -55,6 +56,34 @@ function createTeamPurchase(
       .run();
   }
   return purchase;
+}
+
+let studentCount = 0;
+
+function createStudent() {
+  studentCount += 1;
+  return createUser(`Student ${studentCount}`, schema.UserRole.Student);
+}
+
+function createEnrollment(
+  courseId: number,
+  enrolledAt: string,
+  student = createStudent()
+) {
+  return testDb
+    .insert(schema.enrollments)
+    .values({ userId: student.id, courseId, enrolledAt })
+    .returning()
+    .get();
+}
+
+function createRating(courseId: number, rating: number, createdAt: string) {
+  const student = createStudent();
+  return testDb
+    .insert(schema.courseRatings)
+    .values({ userId: student.id, courseId, rating, createdAt, updatedAt: createdAt })
+    .returning()
+    .get();
 }
 
 function createCourse(
@@ -309,6 +338,101 @@ describe("analyticsService", () => {
       });
     });
 
+    it("counts Enrollments created in the period, whether bought, redeemed or free", () => {
+      // A team member redeems one of the team Purchase's coupons
+      const purchase = createTeamPurchase(
+        base.course.id,
+        20000,
+        "2026-03-01T09:00:00.000Z",
+        5
+      );
+      const teamMember = createStudent();
+      const redeemedAt = "2026-03-02T09:00:00.000Z";
+      const coupon = testDb
+        .select()
+        .from(schema.coupons)
+        .where(eq(schema.coupons.purchaseId, purchase.id))
+        .get()!;
+      testDb
+        .update(schema.coupons)
+        .set({ redeemedByUserId: teamMember.id, redeemedAt })
+        .where(eq(schema.coupons.id, coupon.id))
+        .run();
+      createEnrollment(base.course.id, redeemedAt, teamMember);
+      // A free signup with no Purchase behind it, later today
+      const freeCourse = createCourse("Free Course", base.instructor.id);
+      createEnrollment(freeCourse.id, "2026-03-15T23:59:59.999Z");
+      createEnrollment(base.course.id, "2026-02-13T23:59:59.999Z"); // before the window
+
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        "30d",
+        "day",
+        NOW
+      );
+
+      expect(analytics).toMatchObject({
+        hasCourses: true,
+        summary: { enrollments: 2 },
+      });
+    });
+
+    it("excludes Enrollments in other instructors' courses", () => {
+      const other = createUser("Other", schema.UserRole.Instructor);
+      const otherCourse = createCourse("Other Course", other.id);
+      createEnrollment(otherCourse.id, "2026-03-10T09:00:00.000Z");
+
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        "30d",
+        "day",
+        NOW
+      );
+
+      expect(analytics).toMatchObject({
+        hasCourses: true,
+        summary: { enrollments: 0 },
+      });
+    });
+
+    it("averages ratings across all the instructor's courses for all time, whatever the period", () => {
+      const second = createCourse("Second Course", base.instructor.id);
+      const other = createUser("Other", schema.UserRole.Instructor);
+      const otherCourse = createCourse("Other Course", other.id);
+      createRating(base.course.id, 5, "2024-01-01T09:00:00.000Z"); // years ago
+      createRating(base.course.id, 4, "2026-03-14T09:00:00.000Z");
+      createRating(second.id, 3, "2025-06-01T09:00:00.000Z");
+      createRating(otherCourse.id, 1, "2026-03-14T09:00:00.000Z");
+
+      for (const period of ["7d", "30d", "12m", "all"] as const) {
+        const analytics = getInstructorAnalytics(
+          base.instructor.id,
+          period,
+          "day",
+          NOW
+        );
+
+        expect(analytics).toMatchObject({
+          hasCourses: true,
+          summary: { rating: { average: 4, count: 3 } },
+        });
+      }
+    });
+
+    it("gives an instructor with no ratings an empty rating, not zero", () => {
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        "30d",
+        "day",
+        NOW
+      );
+
+      expect(analytics).toMatchObject({
+        hasCourses: true,
+        summary: { rating: { average: null, count: 0 } },
+      });
+    });
+
     it("tells an instructor with no courses that they have none", () => {
       const newcomer = createUser("Newcomer", schema.UserRole.Instructor);
 
@@ -355,6 +479,8 @@ describe("analyticsService", () => {
           revenue: 0,
           purchases: 0,
           seats: 0,
+          enrollments: 0,
+          rating: { average: null, count: 0 },
         },
         {
           id: draft.id,
@@ -363,6 +489,8 @@ describe("analyticsService", () => {
           revenue: 0,
           purchases: 0,
           seats: 0,
+          enrollments: 0,
+          rating: { average: null, count: 0 },
         },
         {
           id: base.course.id,
@@ -371,6 +499,8 @@ describe("analyticsService", () => {
           revenue: 0,
           purchases: 0,
           seats: 0,
+          enrollments: 0,
+          rating: { average: null, count: 0 },
         },
       ]);
     });
@@ -403,6 +533,25 @@ describe("analyticsService", () => {
       expect(rows.map((row) => row.id)).toEqual([base.course.id]);
     });
 
+    it("counts each course's Enrollments in the period and its all-time rating", () => {
+      const second = createCourse("Second Course", base.instructor.id);
+      createEnrollment(base.course.id, "2026-03-10T09:00:00.000Z");
+      createEnrollment(base.course.id, "2026-03-11T09:00:00.000Z");
+      createEnrollment(base.course.id, "2026-01-01T09:00:00.000Z"); // before the 7 days
+      createEnrollment(second.id, "2026-03-12T09:00:00.000Z");
+      createRating(base.course.id, 5, "2024-01-01T09:00:00.000Z"); // before the 7 days
+      createRating(base.course.id, 2, "2026-03-14T09:00:00.000Z");
+
+      const rows = getCourseRows("7d");
+
+      expect(
+        rows.map((row) => [row.title, row.enrollments, row.rating])
+      ).toEqual([
+        ["Second Course", 1, { average: null, count: 0 }],
+        ["Test Course", 2, { average: 3.5, count: 2 }],
+      ]);
+    });
+
     it("counts a team Purchase as 1 Purchase and N Seats on its course", () => {
       createTeamPurchase(base.course.id, 20000, "2026-03-10T09:00:00.000Z", 5);
       createPurchase(base.course.id, 4999, "2026-03-11T09:00:00.000Z");
@@ -417,6 +566,8 @@ describe("analyticsService", () => {
           revenue: 24999,
           purchases: 2,
           seats: 6,
+          enrollments: 0,
+          rating: { average: null, count: 0 },
         },
       ]);
     });

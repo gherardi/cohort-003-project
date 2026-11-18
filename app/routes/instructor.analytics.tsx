@@ -32,11 +32,15 @@ import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { AlertTriangle, BarChart3, GraduationCap, Plus } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
 import { formatPrice } from "~/lib/utils";
+import { StarRatingDisplay } from "~/components/star-rating";
 
 export function meta() {
   return [
     { title: "Analytics — Cadence" },
-    { name: "description", content: "Revenue across your courses" },
+    {
+      name: "description",
+      content: "Revenue, Enrollments and ratings across your courses",
+    },
   ];
 }
 
@@ -146,15 +150,17 @@ export function HydrateFallback() {
         <Skeleton className="mt-2 h-5 w-72" />
       </div>
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <Skeleton className="h-5 w-24" />
-          </CardHeader>
-          <CardContent>
-            <Skeleton className="h-9 w-32" />
-            <Skeleton className="mt-2 h-4 w-40" />
-          </CardContent>
-        </Card>
+        {[0, 1, 2].map((i) => (
+          <Card key={i}>
+            <CardHeader>
+              <Skeleton className="h-5 w-24" />
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-9 w-32" />
+              <Skeleton className="mt-2 h-4 w-40" />
+            </CardContent>
+          </Card>
+        ))}
       </div>
     </div>
   );
@@ -177,7 +183,7 @@ export default function InstructorAnalytics({
       <div className="mb-8">
         <h1 className="text-3xl font-bold">Analytics</h1>
         <p className="mt-1 text-muted-foreground">
-          Revenue across your courses
+          Revenue, Enrollments and ratings across your courses
         </p>
       </div>
 
@@ -217,6 +223,11 @@ export default function InstructorAnalytics({
               summary={loaderData.analytics.summary}
               period={loaderData.period}
             />
+            <EnrollmentsCard
+              summary={loaderData.analytics.summary}
+              period={loaderData.period}
+            />
+            <RatingCard summary={loaderData.analytics.summary} />
           </div>
           <CoursesTable courses={loaderData.analytics.courses} />
         </>
@@ -284,6 +295,31 @@ function PeriodTabs({ period }: { period: AnalyticsPeriod }) {
   );
 }
 
+function StatCard({
+  title,
+  description,
+  value,
+  caption,
+}: {
+  title: string;
+  description: string;
+  value: string;
+  caption: string;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="text-3xl font-bold">{value}</div>
+        <p className="mt-1 text-sm text-muted-foreground">{caption}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
 function RevenueCard({
   summary,
   period,
@@ -292,22 +328,42 @@ function RevenueCard({
   period: AnalyticsPeriod;
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Revenue</CardTitle>
-        <CardDescription>{getPeriodOption(period).label}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="text-3xl font-bold">
-          {formatRevenue(summary.revenue)}
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {summary.purchases} {summary.purchases === 1 ? "Purchase" : "Purchases"}
-          {" · "}
-          {summary.seats} {summary.seats === 1 ? "Seat" : "Seats"}
-        </p>
-      </CardContent>
-    </Card>
+    <StatCard
+      title="Revenue"
+      description={getPeriodOption(period).label}
+      value={formatRevenue(summary.revenue)}
+      caption={`${summary.purchases} ${summary.purchases === 1 ? "Purchase" : "Purchases"} · ${summary.seats} ${summary.seats === 1 ? "Seat" : "Seats"}`}
+    />
+  );
+}
+
+function EnrollmentsCard({
+  summary,
+  period,
+}: {
+  summary: AnalyticsSummary;
+  period: AnalyticsPeriod;
+}) {
+  return (
+    <StatCard
+      title="Enrollments"
+      description={getPeriodOption(period).label}
+      value={String(summary.enrollments)}
+      caption="Including coupon redemptions and free signups"
+    />
+  );
+}
+
+function RatingCard({ summary }: { summary: AnalyticsSummary }) {
+  const { average, count } = summary.rating;
+
+  return (
+    <StatCard
+      title="Rating"
+      description="All time"
+      value={average === null ? "—" : average.toFixed(1)}
+      caption={`${count} ${count === 1 ? "rating" : "ratings"}`}
+    />
   );
 }
 
@@ -327,6 +383,8 @@ function CoursesTable({ courses }: { courses: AnalyticsCourseRow[] }) {
                 <th className={`${headerClass} text-right`}>Revenue</th>
                 <th className={`${headerClass} text-right`}>Purchases</th>
                 <th className={`${headerClass} text-right`}>Seats</th>
+                <th className={`${headerClass} text-right`}>Enrollments</th>
+                <th className={`${headerClass} text-left`}>Rating (all time)</th>
               </tr>
             </thead>
             <tbody>
@@ -352,6 +410,16 @@ function CoursesTable({ courses }: { courses: AnalyticsCourseRow[] }) {
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     {course.seats}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {course.enrollments}
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {/* Shows "No ratings yet" rather than zero stars */}
+                    <StarRatingDisplay
+                      average={course.rating.average}
+                      count={course.rating.count}
+                    />
                   </td>
                 </tr>
               ))}
