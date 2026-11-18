@@ -1,7 +1,8 @@
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import type { Route } from "./+types/instructor.analytics";
 import { getCurrentUserId } from "~/lib/session";
-import { getUserById } from "~/services/userService";
+import { getUserById, getUsersByRole } from "~/services/userService";
+import { UserRole } from "~/db/schema";
 import {
   getInstructorAnalytics,
   resolveAnalyticsScope,
@@ -15,6 +16,13 @@ import {
   CardTitle,
 } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { Skeleton } from "~/components/ui/skeleton";
 import { AlertTriangle, BarChart3, GraduationCap, Plus } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
@@ -59,12 +67,26 @@ export async function loader({ request }: Route.LoaderArgs) {
     });
   }
 
+  // Only admins get the instructor picker
+  const instructorPicker =
+    user.role === UserRole.Admin
+      ? {
+          instructors: getUsersByRole(UserRole.Instructor).map((instructor) => ({
+            id: instructor.id,
+            name: instructor.name,
+          })),
+          selectedInstructorId:
+            scope.kind === "instructor" ? scope.instructorId : null,
+        }
+      : null;
+
   if (scope.kind === "none-selected") {
-    return { scope: "none-selected" as const };
+    return { scope: "none-selected" as const, instructorPicker };
   }
 
   return {
     scope: "instructor" as const,
+    instructorPicker,
     analytics: getInstructorAnalytics(
       scope.instructorId,
       "30d",
@@ -122,6 +144,10 @@ export default function InstructorAnalytics({
         </p>
       </div>
 
+      {loaderData.instructorPicker && (
+        <InstructorPicker {...loaderData.instructorPicker} />
+      )}
+
       {loaderData.scope === "none-selected" ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <BarChart3 className="mb-4 size-12 text-muted-foreground/50" />
@@ -151,6 +177,42 @@ export default function InstructorAnalytics({
           <RevenueCard summary={loaderData.analytics.summary} />
         </div>
       )}
+    </div>
+  );
+}
+
+function InstructorPicker({
+  instructors,
+  selectedInstructorId,
+}: {
+  instructors: { id: number; name: string }[];
+  selectedInstructorId: number | null;
+}) {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  function handleChange(value: string) {
+    const next = new URLSearchParams(searchParams);
+    next.set("instructorId", value);
+    setSearchParams(next);
+  }
+
+  return (
+    <div className="mb-8">
+      <Select
+        value={selectedInstructorId === null ? "" : String(selectedInstructorId)}
+        onValueChange={handleChange}
+      >
+        <SelectTrigger className="w-64" aria-label="Instructor">
+          <SelectValue placeholder="Select an instructor" />
+        </SelectTrigger>
+        <SelectContent>
+          {instructors.map((instructor) => (
+            <SelectItem key={instructor.id} value={String(instructor.id)}>
+              {instructor.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }
