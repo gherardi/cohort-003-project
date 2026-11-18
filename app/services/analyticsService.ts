@@ -1,6 +1,12 @@
 import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "~/db";
-import { coupons, courses, purchases, UserRole } from "~/db/schema";
+import {
+  coupons,
+  courses,
+  CourseStatus,
+  purchases,
+  UserRole,
+} from "~/db/schema";
 import { getCoursesByInstructor } from "~/services/courseService";
 import { getUserById } from "~/services/userService";
 
@@ -71,9 +77,22 @@ export type AnalyticsSummary = {
   seats: number;
 };
 
+export type AnalyticsCourseRow = {
+  id: number;
+  title: string;
+  status: CourseStatus;
+  revenue: number;
+  purchases: number;
+  seats: number;
+};
+
 export type InstructorAnalytics =
   | { hasCourses: false }
-  | { hasCourses: true; summary: AnalyticsSummary };
+  | {
+      hasCourses: true;
+      summary: AnalyticsSummary;
+      courses: AnalyticsCourseRow[];
+    };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -111,14 +130,16 @@ export function getInstructorAnalytics(
   granularity: AnalyticsGranularity,
   now: Date
 ): InstructorAnalytics {
-  if (getCoursesByInstructor(instructorId).length === 0) {
+  const instructorCourses = getCoursesByInstructor(instructorId);
+  if (instructorCourses.length === 0) {
     return { hasCourses: false };
   }
 
   const { start, end } = getPeriodRange(period, now);
 
-  const rows = db
+  const purchaseRows = db
     .select({
+      courseId: purchases.courseId,
       pricePaid: purchases.pricePaid,
       couponCount: sql<number>`(select count(*) from ${coupons} where ${coupons.purchaseId} = ${purchases.id})`,
     })
@@ -133,13 +154,40 @@ export function getInstructorAnalytics(
     )
     .all();
 
+  // Every owned course gets a row, so courses that sold nothing show as zeros
+  const courseRows = new Map<number, AnalyticsCourseRow>(
+    instructorCourses.map((course) => [
+      course.id,
+      {
+        id: course.id,
+        title: course.title,
+        status: course.status,
+        revenue: 0,
+        purchases: 0,
+        seats: 0,
+      },
+    ])
+  );
+
   const summary: AnalyticsSummary = { revenue: 0, purchases: 0, seats: 0 };
-  for (const row of rows) {
+  for (const row of purchaseRows) {
+    // A team Purchase has one Seat per generated coupon; an individual one has one
+    const seats = row.couponCount > 0 ? row.couponCount : 1;
     summary.revenue += row.pricePaid;
     summary.purchases += 1;
-    // A team Purchase has one Seat per generated coupon; an individual one has one
-    summary.seats += row.couponCount > 0 ? row.couponCount : 1;
+    summary.seats += seats;
+
+    // Both queries filter on the same instructor, so the row always exists
+    const courseRow = courseRows.get(row.courseId)!;
+    courseRow.revenue += row.pricePaid;
+    courseRow.purchases += 1;
+    courseRow.seats += seats;
   }
 
-  return { hasCourses: true, summary };
+  // Highest Revenue first (ties by title); the table can't be re-sorted
+  const sortedCourseRows = [...courseRows.values()].sort(
+    (a, b) => b.revenue - a.revenue || a.title.localeCompare(b.title)
+  );
+
+  return { hasCourses: true, summary, courses: sortedCourseRows };
 }

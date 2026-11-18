@@ -2,12 +2,13 @@ import { Link, useSearchParams } from "react-router";
 import type { Route } from "./+types/instructor.analytics";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById, getUsersByRole } from "~/services/userService";
-import { UserRole } from "~/db/schema";
+import { CourseStatus, UserRole } from "~/db/schema";
 import {
   ANALYTICS_PERIODS,
   getInstructorAnalytics,
   parseAnalyticsPeriod,
   resolveAnalyticsScope,
+  type AnalyticsCourseRow,
   type AnalyticsPeriod,
   type AnalyticsSummary,
 } from "~/services/analyticsService";
@@ -112,6 +113,31 @@ function formatRevenue(cents: number) {
   return cents === 0 ? "$0.00" : formatPrice(cents);
 }
 
+function statusBadge(status: CourseStatus) {
+  switch (status) {
+    case CourseStatus.Published:
+      return (
+        <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-400">
+          Published
+        </span>
+      );
+    case CourseStatus.Draft:
+      return (
+        <span className="inline-flex items-center rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400">
+          Draft
+        </span>
+      );
+    case CourseStatus.Archived:
+      return (
+        <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-900/30 dark:text-gray-400">
+          Archived
+        </span>
+      );
+    default:
+      return null;
+  }
+}
+
 export function HydrateFallback() {
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -192,6 +218,7 @@ export default function InstructorAnalytics({
               period={loaderData.period}
             />
           </div>
+          <CoursesTable courses={loaderData.analytics.courses} />
         </>
       )}
     </div>
@@ -279,6 +306,58 @@ function RevenueCard({
           {" · "}
           {summary.seats} {summary.seats === 1 ? "Seat" : "Seats"}
         </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CoursesTable({ courses }: { courses: AnalyticsCourseRow[] }) {
+  const headerClass =
+    "px-4 py-3 text-xs font-medium uppercase tracking-wider text-muted-foreground";
+
+  return (
+    <Card className="mt-6">
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border bg-muted/50">
+                <th className={`${headerClass} text-left`}>Course</th>
+                <th className={`${headerClass} text-left`}>Status</th>
+                <th className={`${headerClass} text-right`}>Revenue</th>
+                <th className={`${headerClass} text-right`}>Purchases</th>
+                <th className={`${headerClass} text-right`}>Seats</th>
+              </tr>
+            </thead>
+            <tbody>
+              {courses.map((course) => (
+                <tr
+                  key={course.id}
+                  className="border-b border-border last:border-0"
+                >
+                  <td className="px-4 py-3 font-medium">
+                    <Link
+                      to={`/instructor/${course.id}`}
+                      className="hover:underline"
+                    >
+                      {course.title}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">{statusBadge(course.status)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {formatRevenue(course.revenue)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {course.purchases}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {course.seats}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </CardContent>
     </Card>
   );

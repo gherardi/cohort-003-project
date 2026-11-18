@@ -14,6 +14,7 @@ vi.mock("~/db", () => ({
 import {
   getInstructorAnalytics,
   resolveAnalyticsScope,
+  type AnalyticsPeriod,
 } from "./analyticsService";
 
 const NOW = new Date("2026-03-15T12:00:00.000Z");
@@ -56,7 +57,11 @@ function createTeamPurchase(
   return purchase;
 }
 
-function createCourse(title: string, instructorId: number) {
+function createCourse(
+  title: string,
+  instructorId: number,
+  status = schema.CourseStatus.Published
+) {
   return testDb
     .insert(schema.courses)
     .values({
@@ -65,7 +70,7 @@ function createCourse(title: string, instructorId: number) {
       description: title,
       instructorId,
       categoryId: base.category.id,
-      status: schema.CourseStatus.Published,
+      status,
     })
     .returning()
     .get();
@@ -139,7 +144,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 7499, purchases: 2, seats: 2 },
       });
@@ -156,7 +161,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 24999, purchases: 2, seats: 6 },
       });
@@ -175,7 +180,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 4999, purchases: 1, seats: 1 },
       });
@@ -195,7 +200,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 1110, purchases: 3, seats: 3 },
       });
@@ -214,7 +219,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 110, purchases: 2, seats: 2 },
       });
@@ -233,7 +238,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 110, purchases: 2, seats: 2 },
       });
@@ -252,7 +257,7 @@ describe("analyticsService", () => {
         january
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 10, purchases: 1, seats: 1 },
       });
@@ -270,7 +275,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 110, purchases: 2, seats: 2 },
       });
@@ -284,7 +289,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 0, purchases: 0, seats: 0 },
       });
@@ -298,7 +303,7 @@ describe("analyticsService", () => {
         NOW
       );
 
-      expect(analytics).toEqual({
+      expect(analytics).toMatchObject({
         hasCourses: true,
         summary: { revenue: 0, purchases: 0, seats: 0 },
       });
@@ -310,6 +315,110 @@ describe("analyticsService", () => {
       const analytics = getInstructorAnalytics(newcomer.id, "30d", "day", NOW);
 
       expect(analytics).toEqual({ hasCourses: false });
+    });
+  });
+
+  // ─── Per-Course Rows ───
+
+  describe("getInstructorAnalytics courses", () => {
+    function getCourseRows(period: AnalyticsPeriod = "30d") {
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        period,
+        "day",
+        NOW
+      );
+      if (!analytics.hasCourses) throw new Error("expected courses");
+      return analytics.courses;
+    }
+
+    it("includes every owned course, in any status, as zero rows when nothing sold", () => {
+      const draft = createCourse(
+        "Draft Course",
+        base.instructor.id,
+        schema.CourseStatus.Draft
+      );
+      const archived = createCourse(
+        "Archived Course",
+        base.instructor.id,
+        schema.CourseStatus.Archived
+      );
+
+      const rows = getCourseRows();
+
+      // All tied at zero Revenue, so they fall back to title order
+      expect(rows).toEqual([
+        {
+          id: archived.id,
+          title: "Archived Course",
+          status: schema.CourseStatus.Archived,
+          revenue: 0,
+          purchases: 0,
+          seats: 0,
+        },
+        {
+          id: draft.id,
+          title: "Draft Course",
+          status: schema.CourseStatus.Draft,
+          revenue: 0,
+          purchases: 0,
+          seats: 0,
+        },
+        {
+          id: base.course.id,
+          title: "Test Course",
+          status: schema.CourseStatus.Published,
+          revenue: 0,
+          purchases: 0,
+          seats: 0,
+        },
+      ]);
+    });
+
+    it("orders rows by Revenue in the period, highest first", () => {
+      const middle = createCourse("Middle Course", base.instructor.id);
+      const top = createCourse("Top Course", base.instructor.id);
+      createPurchase(middle.id, 3000, "2026-03-10T09:00:00.000Z");
+      createPurchase(top.id, 4000, "2026-03-10T09:00:00.000Z");
+      createPurchase(top.id, 4000, "2026-03-11T09:00:00.000Z");
+      // Outside the 30-day window, so it doesn't lift Test Course to the top
+      createPurchase(base.course.id, 99999, "2026-01-01T09:00:00.000Z");
+
+      const rows = getCourseRows();
+
+      expect(rows.map((row) => [row.title, row.revenue])).toEqual([
+        ["Top Course", 8000],
+        ["Middle Course", 3000],
+        ["Test Course", 0],
+      ]);
+    });
+
+    it("never includes courses of other instructors", () => {
+      const other = createUser("Other", schema.UserRole.Instructor);
+      const otherCourse = createCourse("Other Course", other.id);
+      createPurchase(otherCourse.id, 9999, "2026-03-10T09:00:00.000Z");
+
+      const rows = getCourseRows();
+
+      expect(rows.map((row) => row.id)).toEqual([base.course.id]);
+    });
+
+    it("counts a team Purchase as 1 Purchase and N Seats on its course", () => {
+      createTeamPurchase(base.course.id, 20000, "2026-03-10T09:00:00.000Z", 5);
+      createPurchase(base.course.id, 4999, "2026-03-11T09:00:00.000Z");
+
+      const rows = getCourseRows();
+
+      expect(rows).toEqual([
+        {
+          id: base.course.id,
+          title: "Test Course",
+          status: schema.CourseStatus.Published,
+          revenue: 24999,
+          purchases: 2,
+          seats: 6,
+        },
+      ]);
     });
   });
 });
