@@ -15,8 +15,8 @@ vi.mock("~/db", () => ({
 import {
   getInstructorAnalytics,
   resolveAnalyticsScope,
-  type AnalyticsPeriod,
 } from "./analyticsService";
+import type { AnalyticsPeriod } from "~/lib/analyticsPeriods";
 
 const NOW = new Date("2026-03-15T12:00:00.000Z");
 
@@ -570,6 +570,160 @@ describe("analyticsService", () => {
           rating: { average: null, count: 0 },
         },
       ]);
+    });
+  });
+
+  // ─── Revenue Series ───
+
+  describe("getInstructorAnalytics series", () => {
+    function getSeries(
+      period: AnalyticsPeriod,
+      granularity: string | null,
+      now = NOW
+    ) {
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        period,
+        granularity,
+        now
+      );
+      if (!analytics.hasCourses) throw new Error("expected courses");
+      return analytics.series;
+    }
+
+    it("has a point for every day of the period, zero where nothing sold", () => {
+      createPurchase(base.course.id, 4999, "2026-03-10T09:00:00.000Z");
+      createTeamPurchase(base.course.id, 20000, "2026-03-10T23:59:59.999Z", 5);
+      createPurchase(base.course.id, 2500, "2026-03-15T23:59:59.999Z"); // later today
+      createPurchase(base.course.id, 1, "2026-03-08T23:59:59.999Z"); // before the 7 days
+
+      expect(getSeries("7d", "day")).toEqual([
+        { bucketStart: "2026-03-09", label: "Mar 9", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-03-10", label: "Mar 10", revenue: 24999, purchases: 2 },
+        { bucketStart: "2026-03-11", label: "Mar 11", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-03-12", label: "Mar 12", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-03-13", label: "Mar 13", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-03-14", label: "Mar 14", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-03-15", label: "Mar 15", revenue: 2500, purchases: 1 },
+      ]);
+    });
+
+    it("buckets weeks Monday to Sunday in UTC, labelled by their Monday", () => {
+      // NOW is Sunday 2026-03-15; the 30 days start on Saturday 2026-02-14,
+      // inside the week of Monday 2026-02-09
+      createPurchase(base.course.id, 10, "2026-02-14T00:00:00.000Z"); // first day
+      createPurchase(base.course.id, 100, "2026-03-08T23:59:59.999Z"); // Sunday
+      createPurchase(base.course.id, 1000, "2026-03-09T00:00:00.000Z"); // Monday
+      createPurchase(base.course.id, 1000, "2026-03-15T23:59:59.999Z"); // end of today
+
+      expect(getSeries("30d", "week")).toEqual([
+        { bucketStart: "2026-02-09", label: "Week of Feb 9", revenue: 10, purchases: 1 },
+        { bucketStart: "2026-02-16", label: "Week of Feb 16", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-02-23", label: "Week of Feb 23", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-03-02", label: "Week of Mar 2", revenue: 100, purchases: 1 },
+        { bucketStart: "2026-03-09", label: "Week of Mar 9", revenue: 2000, purchases: 2 },
+      ]);
+    });
+
+    it("has a point for each of the last 12 calendar months", () => {
+      createPurchase(base.course.id, 10, "2025-04-01T00:00:00.000Z"); // first day
+      createPurchase(base.course.id, 100, "2025-12-31T23:59:59.999Z");
+      createPurchase(base.course.id, 1000, "2026-03-15T23:59:59.999Z"); // end of today
+
+      const series = getSeries("12m", "month");
+
+      expect(series.map((point) => [point.label, point.revenue])).toEqual([
+        ["Apr 2025", 10],
+        ["May 2025", 0],
+        ["Jun 2025", 0],
+        ["Jul 2025", 0],
+        ["Aug 2025", 0],
+        ["Sep 2025", 0],
+        ["Oct 2025", 0],
+        ["Nov 2025", 0],
+        ["Dec 2025", 100],
+        ["Jan 2026", 0],
+        ["Feb 2026", 0],
+        ["Mar 2026", 1000],
+      ]);
+      expect(series[0].bucketStart).toBe("2025-04-01");
+    });
+
+    it("starts all time at the month of the first Purchase", () => {
+      createPurchase(base.course.id, 10, "2025-12-20T08:00:00.000Z"); // first Purchase
+      createPurchase(base.course.id, 100, "2026-03-01T00:00:00.000Z");
+
+      expect(getSeries("all", "month")).toEqual([
+        { bucketStart: "2025-12-01", label: "Dec 2025", revenue: 10, purchases: 1 },
+        { bucketStart: "2026-01-01", label: "Jan 2026", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-02-01", label: "Feb 2026", revenue: 0, purchases: 0 },
+        { bucketStart: "2026-03-01", label: "Mar 2026", revenue: 100, purchases: 1 },
+      ]);
+    });
+
+    it("starts all time at the Monday of the first Purchase's week", () => {
+      createPurchase(base.course.id, 10, "2026-03-04T08:00:00.000Z"); // a Wednesday
+
+      expect(getSeries("all", "week")).toEqual([
+        { bucketStart: "2026-03-02", label: "Week of Mar 2", revenue: 10, purchases: 1 },
+        { bucketStart: "2026-03-09", label: "Week of Mar 9", revenue: 0, purchases: 0 },
+      ]);
+    });
+
+    it("gives an instructor with no Revenue a zero point for every day", () => {
+      const series = getSeries("30d", "day");
+
+      expect(series).toHaveLength(30);
+      expect(series[0].bucketStart).toBe("2026-02-14");
+      expect(series[29].bucketStart).toBe("2026-03-15");
+      expect(series.every((point) => point.revenue === 0 && point.purchases === 0)).toBe(true);
+    });
+
+    it("gives an empty series under all time when there are no Purchases", () => {
+      expect(getSeries("all", "month")).toEqual([]);
+    });
+
+    it("buckets a disallowed granularity by the period's default", () => {
+      // Day isn't allowed for 12 months, so it's bucketed by month
+      expect(getSeries("12m", "day")[0].label).toBe("Apr 2025");
+      // Month isn't allowed for 7 days, so it's bucketed by day
+      expect(getSeries("7d", "month")[0].label).toBe("Mar 9");
+    });
+  });
+
+  // ─── Granularity ───
+
+  describe("getInstructorAnalytics granularity", () => {
+    function getGranularity(period: AnalyticsPeriod, granularity: string | null) {
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        period,
+        granularity,
+        NOW
+      );
+      if (!analytics.hasCourses) throw new Error("expected courses");
+      return analytics.granularity;
+    }
+
+    it("defaults to day for 7 and 30 days, and month for 12 months and all time", () => {
+      expect(getGranularity("7d", null)).toBe("day");
+      expect(getGranularity("30d", null)).toBe("day");
+      expect(getGranularity("12m", null)).toBe("month");
+      expect(getGranularity("all", null)).toBe("month");
+    });
+
+    it("keeps an allowed granularity", () => {
+      expect(getGranularity("7d", "week")).toBe("week");
+      expect(getGranularity("30d", "month")).toBe("month");
+      expect(getGranularity("12m", "week")).toBe("week");
+      expect(getGranularity("all", "week")).toBe("week");
+    });
+
+    it("falls back to the period's default for a disallowed or invalid value", () => {
+      expect(getGranularity("12m", "day")).toBe("month");
+      expect(getGranularity("all", "day")).toBe("month");
+      expect(getGranularity("7d", "month")).toBe("day");
+      expect(getGranularity("30d", "hourly")).toBe("day");
     });
   });
 });

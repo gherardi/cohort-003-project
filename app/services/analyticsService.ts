@@ -14,6 +14,12 @@ import {
   type RatingSummary,
 } from "~/services/ratingService";
 import { getUserById } from "~/services/userService";
+import {
+  getPeriodOption,
+  parseAnalyticsGranularity,
+  type AnalyticsGranularity,
+  type AnalyticsPeriod,
+} from "~/lib/analyticsPeriods";
 
 // ─── Analytics Service ───
 // Powers the Instructor Analytics Dashboard: whose data a viewer may see,
@@ -52,30 +58,6 @@ export function resolveAnalyticsScope(
 
 // ─── Instructor Analytics ───
 
-export type AnalyticsPeriod = "7d" | "30d" | "12m" | "all";
-export type AnalyticsGranularity = "day" | "month";
-
-export const ANALYTICS_PERIODS: {
-  value: AnalyticsPeriod;
-  label: string;
-  defaultGranularity: AnalyticsGranularity;
-}[] = [
-  { value: "7d", label: "Last 7 days", defaultGranularity: "day" },
-  { value: "30d", label: "Last 30 days", defaultGranularity: "day" },
-  { value: "12m", label: "Last 12 months", defaultGranularity: "month" },
-  { value: "all", label: "All time", defaultGranularity: "month" },
-];
-
-export const DEFAULT_ANALYTICS_PERIOD: AnalyticsPeriod = "30d";
-
-// A missing or unknown period falls back to the default
-export function parseAnalyticsPeriod(value: string | null): AnalyticsPeriod {
-  return (
-    ANALYTICS_PERIODS.find((option) => option.value === value)?.value ??
-    DEFAULT_ANALYTICS_PERIOD
-  );
-}
-
 export type AnalyticsSummary = {
   revenue: number;
   purchases: number;
@@ -96,11 +78,23 @@ export type AnalyticsCourseRow = {
   rating: RatingSummary;
 };
 
+// One point on the Revenue chart
+export type AnalyticsSeriesPoint = {
+  // UTC date the bucket starts on, as YYYY-MM-DD
+  bucketStart: string;
+  label: string;
+  revenue: number;
+  purchases: number;
+};
+
 export type InstructorAnalytics =
   | { hasCourses: false }
   | {
       hasCourses: true;
+      // The granularity actually used, after any fallback
+      granularity: AnalyticsGranularity;
       summary: AnalyticsSummary;
+      series: AnalyticsSeriesPoint[];
       courses: AnalyticsCourseRow[];
     };
 
@@ -145,12 +139,94 @@ function combineRatingSummaries(summaries: RatingSummary[]): RatingSummary {
   return { average: count === 0 ? null : total / count, count };
 }
 
+function getBucketStart(date: Date, granularity: AnalyticsGranularity) {
+  const day = startOfUtcDay(date);
+  if (granularity === "week") {
+    // Weeks start on Monday; getUTCDay() counts from Sunday
+    const daysSinceMonday = (day.getUTCDay() + 6) % 7;
+    return new Date(day.getTime() - daysSinceMonday * DAY_MS);
+  }
+  if (granularity === "month") {
+    return new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), 1));
+  }
+  return day;
+}
+
+function getNextBucketStart(
+  bucketStart: Date,
+  granularity: AnalyticsGranularity
+) {
+  if (granularity === "month") {
+    return new Date(
+      Date.UTC(bucketStart.getUTCFullYear(), bucketStart.getUTCMonth() + 1, 1)
+    );
+  }
+  const days = granularity === "week" ? 7 : 1;
+  return new Date(bucketStart.getTime() + days * DAY_MS);
+}
+
+function formatBucketLabel(
+  bucketStart: Date,
+  granularity: AnalyticsGranularity
+) {
+  if (granularity === "month") {
+    return bucketStart.toLocaleDateString("en-US", {
+      timeZone: "UTC",
+      month: "short",
+      year: "numeric",
+    });
+  }
+  const day = bucketStart.toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+  });
+  return granularity === "week" ? `Week of ${day}` : day;
+}
+
+// One zero-filled point per bucket from the period start through today
+function buildSeries(
+  rows: { createdAt: string; pricePaid: number }[],
+  start: Date,
+  end: Date,
+  granularity: AnalyticsGranularity
+): AnalyticsSeriesPoint[] {
+  const points = new Map<string, AnalyticsSeriesPoint>();
+  for (
+    let bucketStart = getBucketStart(start, granularity);
+    bucketStart < end;
+    bucketStart = getNextBucketStart(bucketStart, granularity)
+  ) {
+    const key = bucketStart.toISOString().slice(0, 10);
+    points.set(key, {
+      bucketStart: key,
+      label: formatBucketLabel(bucketStart, granularity),
+      revenue: 0,
+      purchases: 0,
+    });
+  }
+
+  for (const row of rows) {
+    const key = getBucketStart(new Date(row.createdAt), granularity)
+      .toISOString()
+      .slice(0, 10);
+    // Rows are already filtered to the period, so their bucket always exists
+    const point = points.get(key)!;
+    point.revenue += row.pricePaid;
+    point.purchases += 1;
+  }
+
+  return [...points.values()];
+}
+
 export function getInstructorAnalytics(
   instructorId: number,
   period: AnalyticsPeriod,
-  granularity: AnalyticsGranularity,
+  // Straight from the URL; validated here so the chart and tabs always agree
+  requestedGranularity: string | null,
   now: Date
 ): InstructorAnalytics {
+  const granularity = parseAnalyticsGranularity(period, requestedGranularity);
   const instructorCourses = getCoursesByInstructor(instructorId);
   if (instructorCourses.length === 0) {
     return { hasCourses: false };
@@ -162,6 +238,7 @@ export function getInstructorAnalytics(
     .select({
       courseId: purchases.courseId,
       pricePaid: purchases.pricePaid,
+      createdAt: purchases.createdAt,
       couponCount: sql<number>`(select count(*) from ${coupons} where ${coupons.purchaseId} = ${purchases.id})`,
     })
     .from(purchases)
@@ -239,5 +316,22 @@ export function getInstructorAnalytics(
     (a, b) => b.revenue - a.revenue || a.title.localeCompare(b.title)
   );
 
-  return { hasCourses: true, summary, courses: sortedCourseRows };
+  // "all" starts at the bucket holding the instructor's first Purchase
+  const firstPurchaseAt = purchaseRows.reduce<string | null>(
+    (first, row) => (first === null || row.createdAt < first ? row.createdAt : first),
+    null
+  );
+  const seriesStart =
+    start ?? (firstPurchaseAt === null ? null : new Date(firstPurchaseAt));
+  const series = seriesStart
+    ? buildSeries(purchaseRows, seriesStart, end, granularity)
+    : [];
+
+  return {
+    hasCourses: true,
+    granularity,
+    summary,
+    series,
+    courses: sortedCourseRows,
+  };
 }

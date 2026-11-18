@@ -4,14 +4,21 @@ import { getCurrentUserId } from "~/lib/session";
 import { getUserById, getUsersByRole } from "~/services/userService";
 import { CourseStatus, UserRole } from "~/db/schema";
 import {
-  ANALYTICS_PERIODS,
   getInstructorAnalytics,
-  parseAnalyticsPeriod,
   resolveAnalyticsScope,
   type AnalyticsCourseRow,
-  type AnalyticsPeriod,
+  type AnalyticsSeriesPoint,
   type AnalyticsSummary,
 } from "~/services/analyticsService";
+import {
+  ANALYTICS_GRANULARITIES,
+  ANALYTICS_PERIODS,
+  getPeriodOption,
+  isGranularityAllowed,
+  parseAnalyticsPeriod,
+  type AnalyticsGranularity,
+  type AnalyticsPeriod,
+} from "~/lib/analyticsPeriods";
 import {
   Card,
   CardContent,
@@ -27,10 +34,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
+import {
+  ChartContainer,
+  ChartTooltip,
+  type ChartConfig,
+} from "~/components/ui/chart";
 import { Skeleton } from "~/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { AlertTriangle, BarChart3, GraduationCap, Plus } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { formatPrice } from "~/lib/utils";
 import { StarRatingDisplay } from "~/components/star-rating";
 
@@ -101,15 +121,10 @@ export async function loader({ request }: Route.LoaderArgs) {
     analytics: getInstructorAnalytics(
       scope.instructorId,
       period,
-      // Granularity only shapes the chart; use each period's default for now
-      getPeriodOption(period).defaultGranularity,
+      url.searchParams.get("granularity"),
       new Date()
     ),
   };
-}
-
-function getPeriodOption(period: AnalyticsPeriod) {
-  return ANALYTICS_PERIODS.find((option) => option.value === period)!;
 }
 
 function formatRevenue(cents: number) {
@@ -229,6 +244,11 @@ export default function InstructorAnalytics({
             />
             <RatingCard summary={loaderData.analytics.summary} />
           </div>
+          <RevenueChart
+            series={loaderData.analytics.series}
+            period={loaderData.period}
+            granularity={loaderData.analytics.granularity}
+          />
           <CoursesTable courses={loaderData.analytics.courses} />
         </>
       )}
@@ -279,6 +299,8 @@ function PeriodTabs({ period }: { period: AnalyticsPeriod }) {
     // Keep instructorId (and any other params) while switching period
     const next = new URLSearchParams(searchParams);
     next.set("period", value);
+    // Let the new period pick its own default granularity
+    next.delete("granularity");
     setSearchParams(next);
   }
 
@@ -292,6 +314,155 @@ function PeriodTabs({ period }: { period: AnalyticsPeriod }) {
         ))}
       </TabsList>
     </Tabs>
+  );
+}
+
+function GranularityTabs({
+  period,
+  granularity,
+}: {
+  period: AnalyticsPeriod;
+  granularity: AnalyticsGranularity;
+}) {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  function handleChange(value: string) {
+    // Keep period and instructorId while switching granularity
+    const next = new URLSearchParams(searchParams);
+    next.set("granularity", value);
+    setSearchParams(next);
+  }
+
+  return (
+    <Tabs value={granularity} onValueChange={handleChange}>
+      <TabsList aria-label="Granularity">
+        {ANALYTICS_GRANULARITIES.map((option) => (
+          <TabsTrigger
+            key={option.value}
+            value={option.value}
+            disabled={!isGranularityAllowed(period, option.value)}
+          >
+            {option.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
+  );
+}
+
+const revenueChartConfig = {
+  revenue: { label: "Revenue", color: "var(--chart-1)" },
+} satisfies ChartConfig;
+
+function RevenueChart({
+  series,
+  period,
+  granularity,
+}: {
+  series: AnalyticsSeriesPoint[];
+  period: AnalyticsPeriod;
+  granularity: AnalyticsGranularity;
+}) {
+  return (
+    <Card className="mt-6">
+      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-4">
+        <div className="grid gap-1.5">
+          <CardTitle>Revenue over time</CardTitle>
+          <CardDescription>{getPeriodOption(period).label}</CardDescription>
+        </div>
+        <GranularityTabs period={period} granularity={granularity} />
+      </CardHeader>
+      <CardContent>
+        {series.length === 0 ? (
+          // Only "all time" with no Purchases has no buckets at all; still draw
+          // the flat line so "nothing sold" doesn't look like a broken chart
+          <ChartContainer config={revenueChartConfig} className="h-64 w-full">
+            <LineChart data={[]} margin={{ left: 12, right: 12 }}>
+              <CartesianGrid vertical={false} />
+              <XAxis type="number" domain={[0, 1]} hide />
+              <YAxis
+                domain={[0, 1]}
+                ticks={[0]}
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+                width={64}
+                tickFormatter={(cents: number) => formatRevenue(cents)}
+              />
+              <ReferenceLine
+                y={0}
+                stroke="var(--color-revenue)"
+                strokeWidth={2}
+                label={{
+                  value: "No Purchases yet",
+                  position: "insideBottom",
+                  dy: -12,
+                  className: "fill-muted-foreground text-sm",
+                }}
+              />
+            </LineChart>
+          </ChartContainer>
+        ) : (
+          <ChartContainer config={revenueChartConfig} className="h-64 w-full">
+            <LineChart data={series} margin={{ left: 12, right: 12 }}>
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+                minTickGap={24}
+              />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+                width={64}
+                allowDecimals={false}
+                tickFormatter={(cents: number) => formatRevenue(cents)}
+              />
+              <ChartTooltip
+                cursor={false}
+                content={({ active, payload }) => {
+                  const point = payload?.[0]?.payload as
+                    | AnalyticsSeriesPoint
+                    | undefined;
+                  if (!active || !point) return null;
+                  return <RevenueTooltip point={point} />;
+                }}
+              />
+              <Line
+                dataKey="revenue"
+                type="monotone"
+                stroke="var(--color-revenue)"
+                strokeWidth={2}
+                dot={series.length <= 31}
+              />
+            </LineChart>
+          </ChartContainer>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RevenueTooltip({ point }: { point: AnalyticsSeriesPoint }) {
+  return (
+    <div className="grid min-w-32 gap-1 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-medium">{point.label}</div>
+      <div className="flex justify-between gap-4">
+        <span className="text-muted-foreground">Revenue</span>
+        <span className="font-mono font-medium tabular-nums">
+          {formatRevenue(point.revenue)}
+        </span>
+      </div>
+      <div className="flex justify-between gap-4">
+        <span className="text-muted-foreground">Purchases</span>
+        <span className="font-mono font-medium tabular-nums">
+          {point.purchases}
+        </span>
+      </div>
+    </div>
   );
 }
 
