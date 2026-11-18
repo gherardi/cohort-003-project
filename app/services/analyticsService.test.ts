@@ -201,6 +201,95 @@ describe("analyticsService", () => {
       });
     });
 
+    it("covers the last 7 days in UTC, including today", () => {
+      // NOW is 2026-03-15; the window is 2026-03-09 through 2026-03-15
+      createPurchase(base.course.id, 1, "2026-03-08T23:59:59.999Z"); // just before
+      createPurchase(base.course.id, 10, "2026-03-09T00:00:00.000Z"); // first day
+      createPurchase(base.course.id, 100, "2026-03-15T23:59:59.999Z"); // end of today
+
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        "7d",
+        "day",
+        NOW
+      );
+
+      expect(analytics).toEqual({
+        hasCourses: true,
+        summary: { revenue: 110, purchases: 2, seats: 2 },
+      });
+    });
+
+    it("covers the last 12 months as whole calendar months, including today", () => {
+      // NOW is 2026-03-15; the window is 2025-04-01 through 2026-03-15
+      createPurchase(base.course.id, 1, "2025-03-31T23:59:59.999Z"); // just before
+      createPurchase(base.course.id, 10, "2025-04-01T00:00:00.000Z"); // first day
+      createPurchase(base.course.id, 100, "2026-03-15T23:59:59.999Z"); // end of today
+
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        "12m",
+        "month",
+        NOW
+      );
+
+      expect(analytics).toEqual({
+        hasCourses: true,
+        summary: { revenue: 110, purchases: 2, seats: 2 },
+      });
+    });
+
+    it("rolls the 12-month window back across the year boundary", () => {
+      // In January 2026 the window starts on 2025-02-01
+      const january = new Date("2026-01-10T12:00:00.000Z");
+      createPurchase(base.course.id, 1, "2025-01-31T23:59:59.999Z"); // just before
+      createPurchase(base.course.id, 10, "2025-02-01T00:00:00.000Z"); // first day
+
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        "12m",
+        "month",
+        january
+      );
+
+      expect(analytics).toEqual({
+        hasCourses: true,
+        summary: { revenue: 10, purchases: 1, seats: 1 },
+      });
+    });
+
+    it("covers all time from the first Purchase through today", () => {
+      createPurchase(base.course.id, 10, "2019-06-01T08:00:00.000Z"); // first Purchase
+      createPurchase(base.course.id, 100, "2026-03-15T23:59:59.999Z"); // end of today
+      createPurchase(base.course.id, 1, "2026-03-16T00:00:00.000Z"); // just after
+
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        "all",
+        "month",
+        NOW
+      );
+
+      expect(analytics).toEqual({
+        hasCourses: true,
+        summary: { revenue: 110, purchases: 2, seats: 2 },
+      });
+    });
+
+    it("returns zeros under all time for an instructor with no Purchases", () => {
+      const analytics = getInstructorAnalytics(
+        base.instructor.id,
+        "all",
+        "month",
+        NOW
+      );
+
+      expect(analytics).toEqual({
+        hasCourses: true,
+        summary: { revenue: 0, purchases: 0, seats: 0 },
+      });
+    });
+
     it("returns zeros for an instructor whose courses earned nothing", () => {
       const analytics = getInstructorAnalytics(
         base.instructor.id,

@@ -4,8 +4,11 @@ import { getCurrentUserId } from "~/lib/session";
 import { getUserById, getUsersByRole } from "~/services/userService";
 import { UserRole } from "~/db/schema";
 import {
+  ANALYTICS_PERIODS,
   getInstructorAnalytics,
+  parseAnalyticsPeriod,
   resolveAnalyticsScope,
+  type AnalyticsPeriod,
   type AnalyticsSummary,
 } from "~/services/analyticsService";
 import {
@@ -24,6 +27,7 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { Skeleton } from "~/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { AlertTriangle, BarChart3, GraduationCap, Plus } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
 import { formatPrice } from "~/lib/utils";
@@ -53,6 +57,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   const url = new URL(request.url);
+  const period = parseAnalyticsPeriod(url.searchParams.get("period"));
   const requestedInstructorId = Number(url.searchParams.get("instructorId"));
   const scope = resolveAnalyticsScope(
     user,
@@ -81,19 +86,25 @@ export async function loader({ request }: Route.LoaderArgs) {
       : null;
 
   if (scope.kind === "none-selected") {
-    return { scope: "none-selected" as const, instructorPicker };
+    return { scope: "none-selected" as const, period, instructorPicker };
   }
 
   return {
     scope: "instructor" as const,
+    period,
     instructorPicker,
     analytics: getInstructorAnalytics(
       scope.instructorId,
-      "30d",
-      "day",
+      period,
+      // Granularity only shapes the chart; use each period's default for now
+      getPeriodOption(period).defaultGranularity,
       new Date()
     ),
   };
+}
+
+function getPeriodOption(period: AnalyticsPeriod) {
+  return ANALYTICS_PERIODS.find((option) => option.value === period)!;
 }
 
 function formatRevenue(cents: number) {
@@ -140,7 +151,7 @@ export default function InstructorAnalytics({
       <div className="mb-8">
         <h1 className="text-3xl font-bold">Analytics</h1>
         <p className="mt-1 text-muted-foreground">
-          Revenue across your courses over the last 30 days
+          Revenue across your courses
         </p>
       </div>
 
@@ -173,9 +184,15 @@ export default function InstructorAnalytics({
           </Link>
         </div>
       ) : (
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          <RevenueCard summary={loaderData.analytics.summary} />
-        </div>
+        <>
+          <PeriodTabs period={loaderData.period} />
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            <RevenueCard
+              summary={loaderData.analytics.summary}
+              period={loaderData.period}
+            />
+          </div>
+        </>
       )}
     </div>
   );
@@ -217,12 +234,41 @@ function InstructorPicker({
   );
 }
 
-function RevenueCard({ summary }: { summary: AnalyticsSummary }) {
+function PeriodTabs({ period }: { period: AnalyticsPeriod }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  function handleChange(value: string) {
+    // Keep instructorId (and any other params) while switching period
+    const next = new URLSearchParams(searchParams);
+    next.set("period", value);
+    setSearchParams(next);
+  }
+
+  return (
+    <Tabs value={period} onValueChange={handleChange} className="mb-6">
+      <TabsList aria-label="Period">
+        {ANALYTICS_PERIODS.map((option) => (
+          <TabsTrigger key={option.value} value={option.value}>
+            {option.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
+  );
+}
+
+function RevenueCard({
+  summary,
+  period,
+}: {
+  summary: AnalyticsSummary;
+  period: AnalyticsPeriod;
+}) {
   return (
     <Card>
       <CardHeader>
         <CardTitle>Revenue</CardTitle>
-        <CardDescription>Last 30 days</CardDescription>
+        <CardDescription>{getPeriodOption(period).label}</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="text-3xl font-bold">

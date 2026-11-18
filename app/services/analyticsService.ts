@@ -41,8 +41,29 @@ export function resolveAnalyticsScope(
 
 // ─── Instructor Analytics ───
 
-export type AnalyticsPeriod = "30d";
-export type AnalyticsGranularity = "day";
+export type AnalyticsPeriod = "7d" | "30d" | "12m" | "all";
+export type AnalyticsGranularity = "day" | "month";
+
+export const ANALYTICS_PERIODS: {
+  value: AnalyticsPeriod;
+  label: string;
+  defaultGranularity: AnalyticsGranularity;
+}[] = [
+  { value: "7d", label: "Last 7 days", defaultGranularity: "day" },
+  { value: "30d", label: "Last 30 days", defaultGranularity: "day" },
+  { value: "12m", label: "Last 12 months", defaultGranularity: "month" },
+  { value: "all", label: "All time", defaultGranularity: "month" },
+];
+
+export const DEFAULT_ANALYTICS_PERIOD: AnalyticsPeriod = "30d";
+
+// A missing or unknown period falls back to the default
+export function parseAnalyticsPeriod(value: string | null): AnalyticsPeriod {
+  return (
+    ANALYTICS_PERIODS.find((option) => option.value === value)?.value ??
+    DEFAULT_ANALYTICS_PERIOD
+  );
+}
 
 export type AnalyticsSummary = {
   revenue: number;
@@ -62,10 +83,25 @@ function startOfUtcDay(date: Date) {
   );
 }
 
-// Every period runs from its first UTC day through the end of today (UTC)
-function getPeriodRange(period: AnalyticsPeriod, now: Date) {
+// Every period runs from its first UTC day through the end of today (UTC).
+// "all" has no start: it begins at the instructor's first Purchase.
+function getPeriodRange(
+  period: AnalyticsPeriod,
+  now: Date
+): { start: Date | null; end: Date } {
   const end = new Date(startOfUtcDay(now).getTime() + DAY_MS);
-  const start = new Date(end.getTime() - 30 * DAY_MS);
+  if (period === "all") {
+    return { start: null, end };
+  }
+  if (period === "12m") {
+    // The current calendar month plus the 11 before it
+    const start = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1)
+    );
+    return { start, end };
+  }
+  const days = period === "7d" ? 7 : 30;
+  const start = new Date(end.getTime() - days * DAY_MS);
   return { start, end };
 }
 
@@ -91,7 +127,7 @@ export function getInstructorAnalytics(
     .where(
       and(
         eq(courses.instructorId, instructorId),
-        gte(purchases.createdAt, start.toISOString()),
+        start ? gte(purchases.createdAt, start.toISOString()) : undefined,
         lt(purchases.createdAt, end.toISOString())
       )
     )
